@@ -37,6 +37,12 @@ Environment:
 #define RESHUB_USE_HELPER_ROUTINES
 #include "reshub.h"
 
+#define TIMEOUT_MAX 0xFFFF
+
+#define SYNAPTICS_S3910_TOUCH_BUFFER_SIZE  160
+#define SYNAPTICS_S3910_TOUCH_EVENT        0x11
+#define SYNAPTICS_S3910_GET_TOUCH_COUNT(x) (((x) - 0x1F) / 0xC) // I have no idea why Synaptics came up with this
+
 typedef UCHAR HID_REPORT_DESCRIPTOR, *PHID_REPORT_DESCRIPTOR;
 
 DRIVER_INITIALIZE                   DriverEntry;
@@ -181,7 +187,7 @@ OnInterruptIsr(
     _In_  ULONG        MessageID
 );
 
-VOID
+NTSTATUS
 SpbDeviceOpen(
     _In_  PDEVICE_CONTEXT  pDevice
 );

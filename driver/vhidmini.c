@@ -776,7 +776,7 @@ OnD0Entry(
     {
     }
 
-    SpbDeviceOpen(pDevice);
+    status = SpbDeviceOpen(pDevice);
 
     return status;
 }
@@ -1948,6 +1948,7 @@ OnInterruptIsr(
 --*/
 {
     BOOLEAN fInterruptRecognized = TRUE;
+    UINT8 touchCount;
     WDFDEVICE device;
     PDEVICE_CONTEXT pDevice;
     NTSTATUS status;
@@ -1959,31 +1960,32 @@ OnInterruptIsr(
     pDevice = GetDeviceContext(device);
 
     do {
-        SpbDeviceRead(pDevice, &eventbuf[0], 160);
+        SpbDeviceRead(pDevice, &eventbuf[0], SYNAPTICS_S3910_TOUCH_BUFFER_SIZE);
 
-        if (eventbuf[1] == 0x11) {
-            int touches = 0;
+        if (eventbuf[1] == SYNAPTICS_S3910_TOUCH_EVENT) {
+            touchCount = SYNAPTICS_S3910_GET_TOUCH_COUNT(eventbuf[2]);
 
-            for (int i = 0; i < 10; i++) {
-                int offset = 35 + 12 * i;
-                if (eventbuf[offset] != 0x5A) {
+            if (touchCount == 0) {
+                readReport.points[0] = 0x06;
+                readReport.points[1] = 0x0;
+                readReport.DIG_TouchScreenContactCount = 1;
+            }
+            else {
+                for (int i = 0; i < touchCount; i++) {
+                    int offset = 35 + 12 * i;
+
                     USHORT xCoord = (eventbuf[offset + 2] << 8) | eventbuf[offset + 1];
                     USHORT yCoord = (eventbuf[offset + 4] << 8) | eventbuf[offset + 3];
                     readReport.points[i * 6 + 0] = 0x07;
-                    readReport.points[i * 6 + 1] = eventbuf[offset];
+                    readReport.points[i * 6 + 1] = eventbuf[offset] & 0x0F;
                     readReport.points[i * 6 + 2] = xCoord & 0xFF;
                     readReport.points[i * 6 + 3] = (xCoord >> 8) & 0xFF;
                     readReport.points[i * 6 + 4] = yCoord & 0xFF;
                     readReport.points[i * 6 + 5] = (yCoord >> 8) & 0xFF;
-                    touches++;
-                }
-                else {
-                    readReport.points[i * 6 + 0] = 0x06;
-                }
-            }   
 
-            readReport.DIG_TouchScreenContactCount = (BYTE)touches;
-            touches = 0;
+                    readReport.DIG_TouchScreenContactCount = touchCount;
+                }
+            }
 
             status = WdfIoQueueRetrieveNextRequest(
                 pDevice->ManualQueue,
@@ -2005,13 +2007,14 @@ OnInterruptIsr(
     return fInterruptRecognized;
 }
 
-VOID 
+NTSTATUS
 SpbDeviceOpen(
     _In_  PDEVICE_CONTEXT  pDevice
 )
 {
     WDF_IO_TARGET_OPEN_PARAMS  openParams;
     NTSTATUS status;
+    UINT16 timeout;
     DECLARE_UNICODE_STRING_SIZE(DevicePath, RESOURCE_HUB_PATH_SIZE);
     RESOURCE_HUB_CREATE_PATH_FROM_ID(
         &DevicePath,
@@ -2037,20 +2040,42 @@ SpbDeviceOpen(
 
     if (!NT_SUCCESS(status))
     {
+        goto exit;
     }
 
+    SpbDeviceWrite(pDevice, cmd_reset, 1);
+    msleep(10);
+
+    timeout = TIMEOUT_MAX;
     SpbDeviceWrite(pDevice, cmd_tcm2_ack, 1);
     msleep(10);
-    do{
+
+    do {
+        if (timeout == 0) {
+            status = STATUS_UNSUCCESSFUL;
+            goto exit;
+        }
+
         SpbDeviceRead(pDevice, &eventbuf[0], 50);
+
         msleep(10);
+        timeout--;
     } while (eventbuf[1] != 0x10);
 
+    timeout = TIMEOUT_MAX;
     SpbDeviceWrite(pDevice, cmd_get_application_info, 3);
     msleep(10);
+
     do {
+        if (timeout == 0) {
+            status = STATUS_UNSUCCESSFUL;
+            goto exit;
+        }
+
         SpbDeviceRead(pDevice, &eventbuf[0], 60);
+
         msleep(10);
+        timeout--;
     } while (eventbuf[1] != 0x01);
 
     tcm_application_info_t* pAppInfo = (tcm_application_info_t*)(eventbuf + 4);
@@ -2068,6 +2093,9 @@ SpbDeviceOpen(
 
     //enable interrupt
     WdfInterruptEnable(pDevice->Interrupt);
+
+exit:
+    return status;
 }
 VOID
 SpbDeviceClose(
